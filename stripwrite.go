@@ -1,39 +1,80 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
 	"fmt"
 	"io"
 	"path"
+	"strings"
 )
 
+type offset struct {
+	// starting offset of the line
+	startLine int
+	// variable value start offset
+	start int
+	// variable value end offset
+	end int
+}
+
+func (o *offset) decrease(n int) {
+	o.startLine -= n
+	o.start -= n
+	o.end -= n
+}
+
 func stripwrite(r io.Reader, w io.Writer, keep bool, excludedVars []string) error {
-	out := [][]byte{}
-	scanner := bufio.NewScanner(r)
-	var currLine int
+	// the starting offset position of a variable
+	offsets := make([]offset, 0)
+	excludedOffsets := make([]offset, 0)
 
-scan:
-	for scanner.Scan() {
-		currLine++
-		b := scanner.Bytes()
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	// current reading position on the buffer
+	var cursor int
+	// amount to decrease for the next variable offset
+	decreaseNext := 0
+	lineNumber := 1
 
-		// check if line only consists of whitespace or an empty line
-		if len(bytes.TrimSpace(b)) == 0 {
-			out = append(out, []byte{})
+	// to track the offset of a comment or a multi-line comments
+	commentStart := -1
+
+match:
+	for cursor < len(buf) {
+		var line strings.Builder
+		startLine := cursor
+		for cursor < len(buf) && buf[cursor] != '\n' {
+			line.WriteByte(buf[cursor])
+			cursor++
+		}
+		end := cursor
+
+		// consume newline
+		if cursor < len(buf) && buf[cursor] == '\n' {
+			cursor++
+			lineNumber++
+		}
+		linestr := line.String()
+		if len(linestr) == 0 {
+			commentStart = -1
 			continue
 		}
 
-		// write comments directly
-		if b[0] == '#' {
-			comment := append(b, '\n')
-			out = append(out, comment)
+		if linestr[0] == '#' {
+			if commentStart == -1 {
+				commentStart = startLine
+			}
 			continue
 		}
-		key, value, found := bytes.Cut(b, []byte("="))
+
+		key, _, found := strings.Cut(linestr, "=")
 		if !found {
-			return fmt.Errorf("environment variable is not valid at line %d\n", currLine)
+			return fmt.Errorf("environment variable is not valid at line %d\n", lineNumber)
 		}
+
+		start := startLine + len(key) + 1 // + 1 to consume the equal sign
 
 		// check for excluded variable patterns if they match with
 		// the scanned keys
@@ -42,47 +83,43 @@ scan:
 			if err != nil {
 				return fmt.Errorf("invalid glob pattern %q: %w", pat, err)
 			}
-
-			if !matched {
-				continue
-			}
-
-			for i := len(out) - 1; i >= 0; i-- {
-				prev := out[i]
-				// if prev output line was a variable. skip trimming out slice
-				if len(prev) > 0 && prev[0] != '#' {
-					break
+			if matched {
+				excludedStart := startLine
+				if commentStart != -1 {
+					excludedStart = commentStart
 				}
-				// if the line is a comment, then move every slice index
-				// after i to be i-1
-				out = append(out[:i], out[i+1:]...)
+				excludedOffset := offset{excludedStart, excludedStart, cursor}
+				excludedOffsets = append(excludedOffsets, excludedOffset)
+				decreaseNext += cursor - excludedStart
+
+				// since we already found the matching variable. we want
+				// to start over to find the new comment for the next variable
+				commentStart = -1
+
+				continue match
 			}
-
-			continue scan
 		}
 
-		line := []byte{}
-		line = append(line, key...)
-		line = append(line, '=')
+		offset := offset{startLine, start, end}
+		offset.decrease(decreaseNext)
+		offsets = append(offsets, offset)
+		commentStart = -1
+	}
 
-		if keep {
-			line = append(line, value...)
+	// remove excluded variables (entire lines including comments)
+	for i := len(excludedOffsets) - 1; i >= 0; i-- {
+		o := excludedOffsets[i]
+		buf = append(buf[:o.start], buf[o.end:]...)
+	}
+
+	// remove the environment value and update the offsets
+	if !keep {
+		for i := len(offsets) - 1; i >= 0; i-- {
+			o := offsets[i]
+			buf = append(buf[:o.start], buf[o.end:]...)
 		}
-
-		out = append(out, line)
 	}
 
-	if err := scanner.Err(); err != nil {
-		return err
-	}
-
-	for _, line := range out {
-		if len(line) == 0 {
-			w.Write([]byte("\n\n"))
-			continue
-		}
-		w.Write(line)
-	}
-
-	return nil
+	_, err = w.Write(bytes.TrimLeft(buf, "\n"))
+	return err
 }
