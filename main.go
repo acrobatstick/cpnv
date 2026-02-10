@@ -11,10 +11,14 @@ func usage() {
 Clone environment variable files.
 
 Options:
-  -input, -i	Input file path (default: ".env")
-  -output, -o	Output file path (default: "copy")
-  -keep, -k	Keep original values (default: false)
-  -help, -h	Show this help message
+  -input, -i			Input file path (default: ".env")
+  -output, -o			Output file path (default: "copy")
+  -keep, -k			Keep original values (default: false)
+  -exclude, -x <PATTERN>...	Exclude environment variables
+				Examples:
+				 -x KEY_1 KEY_2
+				 -x "DB_*" -x "KEY_*"
+  -help, -h			Show this help message
 
 Examples:
   %s -input .env -output processed.env
@@ -34,6 +38,8 @@ func main() {
 		usage()
 	}
 
+	excludedVars := []string{}
+
 	for i := 1; i < len(os.Args); i++ {
 		switch os.Args[i] {
 		case "-input", "-i":
@@ -49,6 +55,16 @@ func main() {
 		case "-keep", "-k":
 			keep = true
 			i++
+		case "-exclude", "-x":
+			for i+1 < len(os.Args) {
+				next := os.Args[i+1]
+				// check if the next argument is a flag or value
+				if next[0] == '-' {
+					break
+				}
+				excludedVars = append(excludedVars, next)
+				i++
+			}
 		case "-help", "-h":
 			usage()
 		}
@@ -68,7 +84,7 @@ func main() {
 	}
 	defer out.Close()
 
-	err = stripwrite(in, out, keep)
+	err = stripwrite(in, out, keep, excludedVars)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error stripping original environment file: %v\n", err)
 		os.Exit(1)
