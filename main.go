@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 )
@@ -77,18 +78,19 @@ func main() {
 	}
 	defer in.Close()
 
-	out, err := os.Create(fmt.Sprintf(".env-%s", output))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error creating output file: %v\n", err)
-		os.Exit(1)
-	}
-	defer out.Close()
-
-	err = stripwrite(in, out, keep, excludedVars)
+	var out bytes.Buffer
+	err = stripwrite(in, &out, keep, excludedVars)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error stripping original environment file: %v\n", err)
 		os.Exit(1)
 	}
 
+	copy, err := os.Create(fmt.Sprintf(".env-%s", output))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error creating output file: %v\n", err)
+		os.Exit(1)
+	}
+	defer copy.Close()
+	copy.Write(out.Bytes())
 	os.Exit(0)
 }
